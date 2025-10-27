@@ -1,0 +1,26 @@
+{
+  "default_device": "",
+  "devices": [],
+  "streaming_services": {
+    "netflix": {
+      "app_id": "Netflix",
+      "launch_command": "netflix://"
+    },
+    "disney": {
+      "app_id": "Disney+",
+      "launch_command": "disney://"
+    },
+    "youtube": {
+      "app_id": "YouTube",
+      "search_url": "https://www.youtube.com/results?search_query="
+    },
+    "hulu": {
+      "app_id": "Hulu",
+      "launch_command": "hulu://"
+    },
+    "prime": {
+      "app_id": "Amazon Prime Video",
+      "launch_command": "amazon://"
+    }
+  }
+}
