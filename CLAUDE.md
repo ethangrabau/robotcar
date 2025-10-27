@@ -9,8 +9,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Unit tests only**: `make test-unit` or `python -m pytest tests/unit/ -v`
 - **Integration tests**: `make test-integration` or `python -m pytest tests/integration/ -v`
 - **E2E tests**: `make test-e2e` or `python -m pytest tests/e2e/ -v`
-- **Run specific test file**: `python -m pytest tests/unit/test_voice.py -v`
 - **Run with coverage**: `python -m pytest tests/unit/ --cov=src --cov-report=term-missing`
+
+#### LangGraph Agent Tests (New)
+- **Core functionality tests**: `python -m pytest tests/unit/test_basic_functionality.py -v`
+- **Integration logic tests**: `python -m pytest tests/unit/test_integration_simple.py -v`
+- **LangGraph agent demo**: `python scripts/test_langgraph_agent.py`
+- **Test results summary**: See `test_results.md` for detailed test report
+
+#### Test Categories
+- **Basic Functionality** (17 tests): Intent classification, game logic, hardware mocking
+- **Hardware Dependent** (skipped in dev): Require `picarx`, `robot_hat`, `langgraph` libraries
+- **Integration** (7 tests): Complete workflows for search, navigation, conversation flow
 
 ### Code Quality
 - **Lint code**: `make lint` (runs flake8 and mypy)
@@ -20,14 +30,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Development
 - **Install dependencies**: `pip install -r requirements.txt`
+- **Install LangGraph dependencies**: `pip install -r requirements-langgraph.txt`
 - **Install dev dependencies**: `make install-dev`
 - **Run main application**: `python -m src.main`
-- **Run agent system**: `python -m src.main_agent`
+- **Run original agent**: `python -m src.main_agent`
+- **Run LangGraph agent**: `python -m src.agent.langgraph_agent`
 
 ### Deployment to Raspberry Pi
 - **Deploy code**: Use `scripts/deploy_and_test.sh` (configured for Pi at 192.168.0.151)
 - **SSH to Pi**: `ssh pi@192.168.0.151` (password: raspberry)
-- **Run on Pi**: `cd /home/pi/Robot_Car && python -m src.main_agent`
+- **Install LangGraph on Pi**: `pip install langgraph langchain langchain-openai`
+- **Run original agent**: `cd /home/pi/Robot_Car && python -m src.main_agent`
+- **Run LangGraph agent**: `cd /home/pi/Robot_Car && python -m src.agent.langgraph_agent`
+- **Test hardware**: `python scripts/test_hardware.py`
 
 ## Architecture Overview
 
@@ -36,11 +51,13 @@ This is a family-friendly robot assistant built on the PiCar-X platform with Ras
 ### Core Components
 
 1. **Agent System** (`src/agent/`)
-   - **Main Agent**: `src/main_agent.py` - Entry point for the agent system
+   - **LangGraph Agent**: `src/agent/langgraph_agent.py` - New graph-based agent with stateful conversations
+   - **Main Agent**: `src/main_agent.py` - Original entry point for the agent system
    - **Tool-Based Architecture**: Agents use tools for specific capabilities
    - **Vision Tools**: `tools/vision_tools.py` - Scene analysis using GPT-4V
    - **Object Search**: `tools/object_search_tool.py` - Find and approach objects
    - **Movement Tools**: `tools/movement_tools.py` - Robot navigation primitives
+   - **Child Interaction**: `tools/child_interaction_tools.py` - Games and educational activities
 
 2. **Hardware Abstraction** (`src/movement/`, `src/vision/`, `src/voice/`)
    - **Movement**: PiCar-X control through robot-hat library
@@ -87,9 +104,31 @@ The system uses a tool registry pattern where high-level agents can invoke speci
 ### Testing Strategy
 
 - **Unit Tests**: Test individual components in isolation
-- **Integration Tests**: Test component interactions
+- **Integration Tests**: Test component interactions  
 - **E2E Tests**: Test complete user workflows
 - **Hardware Tests**: `scripts/test_hardware.py` for robot validation
+
+#### Test Suite Details
+
+**Core Functionality Tests** (`tests/unit/test_basic_functionality.py`):
+- Intent classification (search, navigation, play keywords)
+- Game logic validation (Simon Says, stories, educational content)
+- Hardware mocking for development without physical robot
+- System configuration and error handling
+
+**Integration Tests** (`tests/unit/test_integration_simple.py`):
+- Complete object search workflow simulation
+- Navigation command processing end-to-end
+- Conversation state management and flow control
+- Intent routing and decision tree validation
+
+**LangGraph Agent Demo** (`scripts/test_langgraph_agent.py`):
+- Interactive demo of graph-based agent system
+- Child interaction scenarios
+- Safety feature demonstrations
+- Multi-turn conversation examples
+
+**Test Results**: See `test_results.md` for comprehensive test report (17/17 tests passing)
 
 ### Common Development Tasks
 
@@ -103,6 +142,14 @@ When adding new agent capabilities:
 2. Inherit from `BaseTool` class
 3. Register in agent's tool registry
 4. Add tests in `tests/unit/`
+5. For LangGraph integration: Add node to `src/agent/langgraph_agent.py`
+
+When working with LangGraph agent:
+1. Main entry point: `src/agent/langgraph_agent.py`
+2. Test locally: `python scripts/test_langgraph_agent.py`
+3. Add new interaction modes as graph nodes
+4. Use state management for multi-turn conversations
+5. Test with mocks: `python -m pytest tests/unit/test_integration_simple.py -v`
 
 When deploying to Pi:
 1. Ensure code works locally first

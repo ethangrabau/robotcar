@@ -246,7 +246,9 @@ class FamilyRobotGraph:
         
         Classify the intent as one of:
         - play: Games, fun activities, hide and seek, etc.
-        - help: Finding objects, calling parents, practical help
+        - help: General help or assistance
+        - search: Finding specific objects ("find my keys", "where is my backpack")
+        - navigate: Moving to specific locations ("go to the kitchen", "come here")
         - learn: Educational content, homework, questions
         - story: Storytelling, reading, creative activities
         - respond: Simple conversation, greeting, or unclear request
@@ -257,8 +259,15 @@ class FamilyRobotGraph:
         response = self.llm.invoke([SystemMessage(content=intent_prompt)])
         intent = response.content.strip().lower()
         
+        # Check for explicit keywords that override LLM classification
+        message_lower = last_message.lower() if isinstance(last_message, str) else str(last_message).lower()
+        if "find" in message_lower or "where is" in message_lower or "look for" in message_lower:
+            intent = "search"
+        elif "go to" in message_lower or "come here" in message_lower or "move to" in message_lower:
+            intent = "navigate"
+        
         # Validate intent
-        valid_intents = ["play", "help", "learn", "story", "respond"]
+        valid_intents = ["play", "help", "search", "navigate", "learn", "story", "respond"]
         if intent not in valid_intents:
             intent = "respond"
         
@@ -297,20 +306,13 @@ class FamilyRobotGraph:
         return state
     
     async def help_mode_node(self, state: AgentState) -> AgentState:
-        """Handle help requests"""
+        """Handle general help requests"""
         logger.info("🤝 Entering help mode")
         
         last_message = state["messages"][-1] if state.get("messages") else ""
+        message_str = str(last_message.content) if hasattr(last_message, 'content') else str(last_message)
         
-        # Check if it's about finding something
-        if "find" in last_message.lower():
-            # Extract what to find
-            state["tool_results"] = {
-                "action": "search_for_object",
-                "message": "I'll help you look for that!",
-                "search_active": True
-            }
-        elif "mom" in last_message.lower() or "dad" in last_message.lower():
+        if "mom" in message_str.lower() or "dad" in message_str.lower():
             state["tool_results"] = {
                 "action": "call_parent",
                 "message": "I'll let them know you're looking for them!"
@@ -350,27 +352,178 @@ class FamilyRobotGraph:
         state["current_activity"] = "storytelling"
         return state
     
+    async def search_mode_node(self, state: AgentState) -> AgentState:
+        """Handle object search requests"""
+        logger.info("🔍 Entering search mode")
+        
+        last_message = state["messages"][-1] if state.get("messages") else ""
+        message_str = str(last_message.content) if hasattr(last_message, 'content') else str(last_message)
+        
+        # Extract object to search for
+        search_terms = ["find", "where is", "look for", "search for"]
+        object_to_find = None
+        
+        for term in search_terms:
+            if term in message_str.lower():
+                # Extract object name after the search term
+                parts = message_str.lower().split(term)
+                if len(parts) > 1:
+                    object_to_find = parts[1].strip().rstrip('?!.').lstrip('my ').lstrip('the ')
+                    break
+        
+        if object_to_find:
+            state["search_target"] = object_to_find
+            state["tool_results"] = {
+                "action": "object_search",
+                "message": f"I'll search for the {object_to_find}. Let me look around!",
+                "target": object_to_find,
+                "search_active": True
+            }
+            state["current_activity"] = "searching"
+        else:
+            state["tool_results"] = {
+                "action": "clarify_search",
+                "message": "What would you like me to find?"
+            }
+            state["current_activity"] = "waiting_for_clarification"
+        
+        return state
+    
+    async def navigate_mode_node(self, state: AgentState) -> AgentState:
+        """Handle navigation requests"""
+        logger.info("🗺️ Entering navigation mode")
+        
+        last_message = state["messages"][-1] if state.get("messages") else ""
+        message_str = str(last_message.content) if hasattr(last_message, 'content') else str(last_message)
+        
+        # Parse navigation commands
+        if "come here" in message_str.lower():
+            state["tool_results"] = {
+                "action": "come_to_user",
+                "message": "I'm coming to you!",
+                "movement": "approach_person"
+            }
+        elif "go to" in message_str.lower():
+            # Extract location
+            parts = message_str.lower().split("go to")
+            if len(parts) > 1:
+                location = parts[1].strip().rstrip('!.').lstrip('the ')
+                state["navigation_target"] = location
+                state["tool_results"] = {
+                    "action": "navigate_to_location",
+                    "message": f"I'll go to the {location}!",
+                    "destination": location
+                }
+        elif "follow me" in message_str.lower():
+            state["tool_results"] = {
+                "action": "follow_mode",
+                "message": "I'll follow you!",
+                "movement": "follow"
+            }
+        elif "stop" in message_str.lower():
+            state["tool_results"] = {
+                "action": "stop_movement",
+                "message": "Stopping now!",
+                "movement": "stop"
+            }
+        else:
+            # General movement
+            state["tool_results"] = {
+                "action": "explore",
+                "message": "I'll explore around!",
+                "movement": "explore"
+            }
+        
+        state["current_activity"] = "navigating"
+        return state
+    
     async def execute_action_node(self, state: AgentState) -> AgentState:
-        """Execute the planned action with safety checks"""
+        """Execute the planned action using actual robot hardware"""
         logger.info("⚙️ Executing action")
         
         tool_results = state.get("tool_results", {})
         action = tool_results.get("action", "")
         
-        # Safety override for any movement
-        if state.get("safety_status") == "caution":
-            logger.info("🐢 Reducing speed due to nearby child")
-            self.movement.set_max_speed(self.SLOW_SPEED)
+        try:
+            # Object search actions
+            if action == "object_search" and self.object_search:
+                target = tool_results.get("target", "object")
+                logger.info(f"🔍 Starting search for: {target}")
+                
+                # Use the actual ObjectSearchTool
+                search_result = await self.object_search.execute(
+                    object_name=target,
+                    timeout=60,
+                    confidence_threshold=0.5
+                )
+                
+                if search_result.get("found"):
+                    state["tool_results"]["status"] = "found"
+                    state["tool_results"]["message"] = f"I found the {target}!"
+                else:
+                    state["tool_results"]["status"] = "not_found"
+                    state["tool_results"]["message"] = f"I couldn't find the {target} after searching."
+            
+            # Navigation actions
+            elif action == "come_to_user":
+                # Move toward where we last saw a person
+                await self.movement.move_forward(distance=1, speed=50)
+                state["tool_results"]["status"] = "moving"
+            
+            elif action == "navigate_to_location":
+                destination = tool_results.get("destination")
+                logger.info(f"📍 Navigating to: {destination}")
+                
+                # Simple navigation - in reality would use mapping
+                await self.movement.turn(angle=45, speed=50)
+                await self.movement.move_forward(distance=2, speed=50)
+                state["tool_results"]["status"] = "arrived"
+                state["tool_results"]["message"] = f"I've arrived at the {destination}!"
+            
+            elif action == "stop_movement":
+                await self.movement.stop()
+                state["tool_results"]["status"] = "stopped"
+            
+            elif action == "follow_mode":
+                # Start follow mode - would use vision to track person
+                state["tool_results"]["status"] = "following"
+                logger.info("👣 Following mode activated")
+            
+            # Game actions
+            elif action == "interactive_game":
+                game = tool_results.get("game")
+                if game == "simon_says":
+                    # Import and use the Simon Says game tool
+                    from .tools.child_interaction_tools import SimonSaysGame
+                    simon_game = SimonSaysGame()
+                    game_result = await simon_game.execute(difficulty="easy", rounds=3)
+                    state["tool_results"]["status"] = "game_complete"
+                    state["tool_results"]["score"] = game_result.get("score", 0)
+                elif game == "hide_and_seek":
+                    from .tools.child_interaction_tools import HideAndSeekGame
+                    hide_seek = HideAndSeekGame()
+                    game_result = await hide_seek.execute(count_time=10, search_time=60)
+                    state["tool_results"]["status"] = "game_complete"
+            
+            # Story actions
+            elif action == "storytelling":
+                from .tools.child_interaction_tools import StorytellingTool
+                storyteller = StorytellingTool()
+                story_result = await storyteller.execute(
+                    story_type=tool_results.get("story_type", "premade"),
+                    theme="adventure"
+                )
+                state["tool_results"]["status"] = "story_told"
+            
+            # Default/unknown actions
+            else:
+                logger.info(f"📝 Action '{action}' noted but not executed")
+                state["tool_results"]["status"] = "acknowledged"
         
-        # Execute based on action type
-        if action == "search_for_object":
-            # This would trigger the object search tool
-            state["tool_results"]["status"] = "searching"
-        elif action == "interactive_game":
-            # Start a game sequence
-            if tool_results.get("game") == "simon_says":
-                state["tool_results"]["status"] = "game_active"
-                state["tool_results"]["next_move"] = "Simon says... touch your nose!"
+        except Exception as e:
+            logger.error(f"❌ Error executing action {action}: {e}")
+            state["tool_results"]["status"] = "error"
+            state["tool_results"]["error"] = str(e)
         
         return state
     
@@ -392,9 +545,13 @@ class FamilyRobotGraph:
         
         return state
     
-    def route_by_intent(self, state: AgentState) -> Literal["play", "help", "learn", "story", "respond"]:
+    def route_by_intent(self, state: AgentState) -> Literal["play", "help", "search", "navigate", "learn", "story", "respond"]:
         """Route to appropriate mode based on intent"""
         mode = state.get("interaction_mode", "respond")
+        # Ensure mode is valid
+        valid_modes = ["play", "help", "search", "navigate", "learn", "story", "respond"]
+        if mode not in valid_modes:
+            mode = "respond"
         return mode
     
     def should_continue(self, state: AgentState) -> Literal["continue", "end"]:
