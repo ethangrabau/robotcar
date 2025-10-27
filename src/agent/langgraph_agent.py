@@ -22,6 +22,9 @@ from langgraph.checkpoint.memory import MemorySaver
 
 # Import ALL existing tools and capabilities
 from .tools.vision_tools import AnalyzeSceneTool
+from .tools.persistent_search_tool import PersistentSearchTool
+from .tools.room_discovery_tool import RoomDiscoveryTool
+from .tools.smart_search_router import SmartSearchRouter
 try:
     from .tools.object_search_tool import ObjectSearchTool
 except ImportError:
@@ -91,7 +94,12 @@ class FamilyRobotGraph:
         self.movement = MovementController()
         self.camera = Camera()
         
-        # Initialize object search if available
+        # Initialize enhanced search and mapping tools
+        self.persistent_search = PersistentSearchTool()
+        self.room_discovery = RoomDiscoveryTool()
+        self.smart_router = SmartSearchRouter()
+        
+        # Initialize legacy object search if available
         try:
             self.object_search = ObjectSearchTool()
         except Exception as e:
@@ -105,6 +113,9 @@ class FamilyRobotGraph:
             "vision": True,
             "movement": True,
             "object_search": self.object_search is not None,
+            "persistent_search": True,
+            "smart_routing": True,
+            "room_mapping": True,
             "speech": True
         }
         
@@ -127,6 +138,7 @@ class FamilyRobotGraph:
         workflow.add_node("story_mode", self.story_mode_node)
         workflow.add_node("search_mode", self.search_mode_node)  # Object search
         workflow.add_node("navigate_mode", self.navigate_mode_node)  # Navigation
+        workflow.add_node("explore_mode", self.explore_mode_node)  # Room discovery
         workflow.add_node("execute_action", self.execute_action_node)
         workflow.add_node("respond", self.respond_node)
         
@@ -148,6 +160,7 @@ class FamilyRobotGraph:
                 "story": "story_mode",
                 "search": "search_mode",
                 "navigate": "navigate_mode",
+                "explore": "explore_mode",
                 "respond": "respond",
             }
         )
@@ -159,6 +172,7 @@ class FamilyRobotGraph:
         workflow.add_edge("story_mode", "execute_action")
         workflow.add_edge("search_mode", "execute_action")
         workflow.add_edge("navigate_mode", "execute_action")
+        workflow.add_edge("explore_mode", "execute_action")
         
         # Execution leads to response
         workflow.add_edge("execute_action", "respond")
@@ -249,6 +263,7 @@ class FamilyRobotGraph:
         - help: General help or assistance
         - search: Finding specific objects ("find my keys", "where is my backpack")
         - navigate: Moving to specific locations ("go to the kitchen", "come here")
+        - explore: Mapping, room discovery ("explore the house", "show me the map", "what rooms have you found")
         - learn: Educational content, homework, questions
         - story: Storytelling, reading, creative activities
         - respond: Simple conversation, greeting, or unclear request
@@ -265,9 +280,11 @@ class FamilyRobotGraph:
             intent = "search"
         elif "go to" in message_lower or "come here" in message_lower or "move to" in message_lower:
             intent = "navigate"
+        elif "explore" in message_lower or "map" in message_lower or "rooms" in message_lower or "house" in message_lower:
+            intent = "explore"
         
         # Validate intent
-        valid_intents = ["play", "help", "search", "navigate", "learn", "story", "respond"]
+        valid_intents = ["play", "help", "search", "navigate", "explore", "learn", "story", "respond"]
         if intent not in valid_intents:
             intent = "respond"
         
@@ -353,8 +370,8 @@ class FamilyRobotGraph:
         return state
     
     async def search_mode_node(self, state: AgentState) -> AgentState:
-        """Handle object search requests"""
-        logger.info("🔍 Entering search mode")
+        """Handle object search requests using persistent search"""
+        logger.info("🔍 Entering enhanced search mode")
         
         last_message = state["messages"][-1] if state.get("messages") else ""
         message_str = str(last_message.content) if hasattr(last_message, 'content') else str(last_message)
@@ -373,13 +390,26 @@ class FamilyRobotGraph:
         
         if object_to_find:
             state["search_target"] = object_to_find
-            state["tool_results"] = {
-                "action": "object_search",
-                "message": f"I'll search for the {object_to_find}. Let me look around!",
-                "target": object_to_find,
-                "search_active": True
-            }
-            state["current_activity"] = "searching"
+            # Check if we have learned patterns for smarter search
+            has_learned_patterns = len(self.room_discovery.house_map.object_locations) > 0
+            
+            if has_learned_patterns:
+                state["tool_results"] = {
+                    "action": "smart_search",
+                    "message": f"I'll use what I've learned to search intelligently for the {object_to_find}. Let me check the most likely locations first!",
+                    "target": object_to_find,
+                    "search_type": "smart_routing",
+                    "search_active": True
+                }
+            else:
+                state["tool_results"] = {
+                    "action": "persistent_search",
+                    "message": f"I'll search systematically for the {object_to_find}. I won't give up until I find it or check everywhere possible!",
+                    "target": object_to_find,
+                    "search_type": "persistent",
+                    "search_active": True
+                }
+            state["current_activity"] = "persistent_searching"
         else:
             state["tool_results"] = {
                 "action": "clarify_search",
@@ -437,6 +467,43 @@ class FamilyRobotGraph:
         state["current_activity"] = "navigating"
         return state
     
+    async def explore_mode_node(self, state: AgentState) -> AgentState:
+        """Handle room discovery and mapping requests"""
+        logger.info("🗺️ Entering exploration mode")
+        
+        last_message = state["messages"][-1] if state.get("messages") else ""
+        message_str = str(last_message.content) if hasattr(last_message, 'content') else str(last_message)
+        
+        # Determine exploration action based on user request
+        if "map" in message_str.lower() or "rooms" in message_str.lower():
+            state["tool_results"] = {
+                "action": "show_map",
+                "message": "Let me show you what I've discovered about the house!",
+                "exploration_type": "show_map"
+            }
+        elif "explore" in message_str.lower() or "discover" in message_str.lower():
+            state["tool_results"] = {
+                "action": "explore_new",
+                "message": "I'll explore to discover new areas of the house!",
+                "exploration_type": "discover_new"
+            }
+        elif "this room" in message_str.lower() or "analyze" in message_str.lower():
+            state["tool_results"] = {
+                "action": "analyze_current",
+                "message": "Let me analyze this room and add it to my map!",
+                "exploration_type": "analyze_current"
+            }
+        else:
+            # Default to analyzing current room
+            state["tool_results"] = {
+                "action": "analyze_current",
+                "message": "Let me analyze this area and see what I can learn about it!",
+                "exploration_type": "analyze_current"
+            }
+        
+        state["current_activity"] = "exploring"
+        return state
+    
     async def execute_action_node(self, state: AgentState) -> AgentState:
         """Execute the planned action using actual robot hardware"""
         logger.info("⚙️ Executing action")
@@ -445,24 +512,79 @@ class FamilyRobotGraph:
         action = tool_results.get("action", "")
         
         try:
-            # Object search actions
-            if action == "object_search" and self.object_search:
+            # Smart search with learning
+            if action == "smart_search":
                 target = tool_results.get("target", "object")
-                logger.info(f"🔍 Starting search for: {target}")
+                logger.info(f"🧠 Starting smart search for: {target}")
                 
-                # Use the actual ObjectSearchTool
-                search_result = await self.object_search.execute(
+                # Use the SmartSearchRouter
+                search_result = await self.smart_router.execute(
                     object_name=target,
-                    timeout=60,
-                    confidence_threshold=0.5
+                    use_learning=True,
+                    max_search_time=300
                 )
                 
                 if search_result.get("found"):
                     state["tool_results"]["status"] = "found"
-                    state["tool_results"]["message"] = f"I found the {target}!"
+                    state["tool_results"]["message"] = f"Found the {target}! My learning paid off - {search_result.get('search_strategy', 'smart search')} worked!"
+                    state["tool_results"]["location"] = search_result.get("location")
+                    state["tool_results"]["search_strategy"] = search_result.get("search_strategy")
                 else:
-                    state["tool_results"]["status"] = "not_found"
-                    state["tool_results"]["message"] = f"I couldn't find the {target} after searching."
+                    state["tool_results"]["status"] = "not_found_smart_search"
+                    state["tool_results"]["message"] = f"Completed intelligent search for {target}. {search_result.get('message', 'Search complete.')}"
+                    state["tool_results"]["search_strategy"] = search_result.get("search_strategy")
+            
+            # Enhanced persistent search actions
+            elif action == "persistent_search":
+                target = tool_results.get("target", "object")
+                logger.info(f"🔍 Starting persistent search for: {target}")
+                
+                # Use the new PersistentSearchTool
+                search_result = await self.persistent_search.execute(
+                    object_name=target,
+                    max_total_time=300,  # 5 minutes max
+                    announce_progress=True
+                )
+                
+                if search_result.get("found"):
+                    state["tool_results"]["status"] = "found"
+                    state["tool_results"]["message"] = f"Successfully found the {target} using {search_result.get('strategy_used')} strategy!"
+                    state["tool_results"]["location"] = search_result.get("location")
+                    state["tool_results"]["areas_searched"] = search_result.get("areas_searched", [])
+                    
+                    # Learn this object location for future searches
+                    current_room = state.get("current_room_id")
+                    if current_room:
+                        self.room_discovery.house_map.learn_object_location(target, current_room)
+                else:
+                    state["tool_results"]["status"] = "not_found_after_thorough_search"
+                    state["tool_results"]["message"] = f"I searched thoroughly for the {target} in {len(search_result.get('areas_searched', []))} areas but couldn't find it. {search_result.get('recommendation', '')}"
+                    state["tool_results"]["areas_searched"] = search_result.get("areas_searched", [])
+            
+            # Room discovery and mapping actions
+            elif action in ["show_map", "analyze_current", "explore_new"]:
+                logger.info(f"🗺️ Executing room discovery action: {action}")
+                
+                discovery_result = await self.room_discovery.execute(action=action)
+                
+                state["tool_results"]["status"] = "completed"
+                state["tool_results"]["discovery_result"] = discovery_result
+                
+                if action == "analyze_current":
+                    if discovery_result.get("action") == "discovered_new_room":
+                        state["current_room_id"] = discovery_result.get("room_id")
+                        state["tool_results"]["message"] = f"I've discovered this is a {discovery_result.get('room_type')}! I found {len(discovery_result.get('objects_found', []))} items here."
+                    elif discovery_result.get("action") == "recognized_existing_room":
+                        state["current_room_id"] = discovery_result.get("room_id")
+                        state["tool_results"]["message"] = f"I recognize this room - it's the {discovery_result.get('room_name')}!"
+                
+                elif action == "show_map":
+                    map_summary = discovery_result.get("map_summary", {})
+                    state["tool_results"]["message"] = f"I've mapped {map_summary.get('total_rooms', 0)} rooms and learned where {len(map_summary.get('object_patterns', {}))} types of objects are usually found."
+                
+                elif action == "explore_new":
+                    areas_explored = discovery_result.get("areas_explored", 0)
+                    state["tool_results"]["message"] = f"Exploration complete! I checked {areas_explored} new areas."
             
             # Navigation actions
             elif action == "come_to_user":
@@ -545,11 +667,11 @@ class FamilyRobotGraph:
         
         return state
     
-    def route_by_intent(self, state: AgentState) -> Literal["play", "help", "search", "navigate", "learn", "story", "respond"]:
+    def route_by_intent(self, state: AgentState) -> Literal["play", "help", "search", "navigate", "explore", "learn", "story", "respond"]:
         """Route to appropriate mode based on intent"""
         mode = state.get("interaction_mode", "respond")
         # Ensure mode is valid
-        valid_modes = ["play", "help", "search", "navigate", "learn", "story", "respond"]
+        valid_modes = ["play", "help", "search", "navigate", "explore", "learn", "story", "respond"]
         if mode not in valid_modes:
             mode = "respond"
         return mode
